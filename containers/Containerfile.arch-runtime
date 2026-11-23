@@ -1,0 +1,27 @@
+FROM localhost/mlwm-arch-build:latest AS build
+
+WORKDIR /src
+COPY dune-project mlwm.opam /src/
+COPY bin /src/bin
+COPY cbits /src/cbits
+COPY config /src/config
+COPY lib /src/lib
+COPY test /src/test
+COPY packaging /src/packaging
+
+RUN dune build --profile=release --build-dir=/tmp/mlwm-build \
+    && strip /tmp/mlwm-build/default/bin/main.exe -o /tmp/mlwm
+
+FROM docker.io/library/archlinux:latest
+
+RUN pacman -Syu --noconfirm \
+        xorg-server-xvfb xorg-xinit xorg-xrandr libx11 libxrandr \
+        xterm rofi dmenu xdotool xorg-xprop xorg-xwininfo procps-ng \
+    && pacman -Scc --noconfirm
+
+COPY --from=build /tmp/mlwm /usr/local/bin/mlwm
+COPY --from=build /src/packaging/arch/mlwm.desktop /usr/share/xsessions/mlwm.desktop
+COPY --from=build /src/packaging/arch/xinitrc /root/.xinitrc
+
+RUN chmod 755 /usr/local/bin/mlwm \
+    && chmod 644 /usr/share/xsessions/mlwm.desktop /root/.xinitrc
