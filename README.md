@@ -5,6 +5,15 @@ Minimal dynamic-tiling window manager written in OCaml with direct C interop
 future Wayland (`wlroots`) backend can replace the display backend without
 touching the core.
 
+## Quick Bootstrap on Arch Linux
+
+On a fresh Arch Linux install or QEMU VM:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/NandanBali/fatewm/main/bootstrap.sh | bash
+startx
+```
+
 ## Layout & Size Budget (Hard Cap: 6,000 LOC)
 
 - `lib/proto/` — Display-server-agnostic types, events, commands, and `Backend.S` (stdlib only).
@@ -49,4 +58,4 @@ dune runtest
 ./containers/run-arch.sh smoke-runtime
 ```
 
-See `packaging/arch/INSTALL.md` for installing on a blank Arch Linux system.
+See `packaging/arch/INSTALL.md` for manual installation and `makepkg` instructions.
