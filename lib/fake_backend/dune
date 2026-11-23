@@ -1,0 +1,4 @@
+(library
+ (name mlwm_fake_backend)
+ (public_name mlwm.fake_backend)
+ (libraries mlwm_proto))

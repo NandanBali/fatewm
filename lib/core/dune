@@ -1,0 +1,4 @@
+(library
+ (name mlwm_core)
+ (public_name mlwm.core)
+ (libraries mlwm_proto))

@@ -1,0 +1,4 @@
+(library
+ (name mlwm_x11_backend)
+ (public_name mlwm.x11_backend)
+ (libraries mlwm_proto mlwm_x11_c unix))

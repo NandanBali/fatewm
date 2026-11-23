@@ -1,0 +1,5 @@
+(executable
+ (name main)
+ (public_name mlwm)
+ (package mlwm)
+ (libraries mlwm_proto mlwm_core mlwm_config mlwm_x11_backend))

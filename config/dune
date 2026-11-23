@@ -1,0 +1,3 @@
+(library
+ (name mlwm_config)
+ (libraries mlwm_proto mlwm_core))

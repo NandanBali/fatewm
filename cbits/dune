@@ -1,0 +1,8 @@
+(library
+ (name mlwm_x11_c)
+ (public_name mlwm.x11_c)
+ (foreign_stubs
+  (language c)
+  (names x11_stubs)
+  (flags (:standard -Wall -Wextra -std=c11)))
+ (c_library_flags (-lX11 -lXrandr)))
