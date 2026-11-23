@@ -13,5 +13,13 @@ type t =
       (** Managed window was destroyed. *)
   | Window_focus_requested of Types.Window_id.t
       (** User clicked an unfocused managed window (click-to-focus). *)
+  | Window_configure_requested of {
+      id : Types.Window_id.t;
+      geometry : Types.Rect.t;
+    }
+      (** A managed client asked to move/resize itself (X ConfigureRequest).
+          [geometry] is complete and root-relative (the backend fills fields
+          the client left out from the window's current geometry) and excludes
+          the border. Requests from unmanaged windows never reach the core. *)
   | Key_pressed of Types.Key.binding
       (** A grabbed keybinding was triggered. *)

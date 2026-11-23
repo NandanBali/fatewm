@@ -322,6 +322,7 @@ let step t (event : Event.t) =
       if Stack_set.mem w t.ss then
         render ~force:true { t with ss = Stack_set.focus_window w t.ss }
       else (t, [])
+  | Window_configure_requested _ -> (t, [])
   | Key_pressed binding -> (
       match lookup_key t.config binding with
       | Some a -> act t a

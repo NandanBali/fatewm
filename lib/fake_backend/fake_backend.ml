@@ -165,7 +165,8 @@ let apply_event world = function
       stacking_order = remove_id id world.stacking_order;
       focused = clear_focus_if id world.focused;
     }
-  | Event.Window_focus_requested _ | Event.Key_pressed _ -> world
+  | Event.Window_focus_requested _ | Event.Window_configure_requested _
+  | Event.Key_pressed _ -> world
 
 let window_state world id = Window_map.find_opt id world.windows
 
