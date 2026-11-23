@@ -95,3 +95,21 @@ let center ~border_width (area : Rect.t) ~w ~h : Rect.t =
     w;
     h;
   }
+
+(** Put a stored floating rect (relative to [area]'s origin) on screen, in
+    absolute coordinates, so that the whole window, border included, lies inside
+    [area]: a window that is too big shrinks to fit, one that hangs off the
+    right/bottom edge slides back in. Only the {e rendered} rect is clamped; the
+    stored one is kept, so moving the window back to a larger output restores
+    its original position and size. *)
+let fit ~border_width (area : Rect.t) (r : Rect.t) : Rect.t =
+  let bw2 = 2 * border_width in
+  let w = max 1 (min r.w (area.w - bw2))
+  and h = max 1 (min r.h (area.h - bw2)) in
+  let clamp v hi = max 0 (min v hi) in
+  {
+    x = area.x + clamp r.x (area.w - w - bw2);
+    y = area.y + clamp r.y (area.h - h - bw2);
+    w;
+    h;
+  }

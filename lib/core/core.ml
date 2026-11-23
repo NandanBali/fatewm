@@ -5,7 +5,15 @@
    against [placed], the record of what we last told the backend. That keeps
    handlers tiny and makes the emitted commands deterministic and minimal:
    windows are hidden only when they leave visibility, placed only when their
-   geometry changes, and shown only when they appear. *)
+   geometry changes, and shown only when they appear.
+
+   Focus and stacking are diffed the same way, against [focused_sent] and
+   [raised]. That matters because mlwm does not own every window: launchers
+   like rofi are override-redirect, take input focus and sit on top. A
+   background event (some other window closing, a repeated output snapshot)
+   must not emit a Focus_window or Raise_window that would steal focus from
+   them or cover them. Only user-initiated events — a click or a WM key
+   binding — re-assert focus and stacking unconditionally ([~force]). *)
 
 open Mlwm_proto
 open Types
@@ -48,6 +56,9 @@ type t = {
   placed : Rect.t Wmap.t;
       (** Windows the backend currently shows, with the geometry we last sent.
           Its keys are exactly the visible windows. *)
+  focused_sent : Window_id.t option;  (** target of the last Focus_window *)
+  raised : Window_id.t list;
+      (** Raise sequence the current stacking satisfies (last = topmost). *)
 }
 
 let backend_config (cfg : Config.t) : Backend.config =
@@ -83,8 +94,8 @@ let screen_placements (t : t) (scr : Stack_set.screen) =
       (List.length tiled)
   in
   let float_rect w =
-    let r = Wmap.find w t.ss.floating in
-    { r with x = area.x + r.x; y = area.y + r.y }
+    Layout.fit ~border_width:t.config.border_width area
+      (Wmap.find w t.ss.floating)
   in
   List.map2 (fun win rect -> { win; rect }) tiled rects
   @ List.map (fun win -> { win; rect = float_rect win }) floats
@@ -103,17 +114,36 @@ let screen_raises (t : t) (scr : Stack_set.screen) =
   in
   let floats = List.filter is_float (Stack_set.windows ws) in
   let unfocused, focused = List.partition (fun w -> Some w <> focus) floats in
-  List.map (fun w -> Command.Raise_window w) (monocle @ unfocused @ focused)
+  monocle @ unfocused @ focused
 
-(* Turn the model into commands, diffing against [t.placed]:
+(* [xs] is [ys] with some elements dropped and the order kept. *)
+let rec is_subsequence xs ys =
+  match (xs, ys) with
+  | [], _ -> true
+  | _, [] -> false
+  | x :: xs', y :: ys' ->
+      if Window_id.equal x y then is_subsequence xs' ys'
+      else is_subsequence xs ys'
+
+(* Turn the model into commands, diffing against what we last sent:
    1. Hide windows that were visible and are not any more (but are still
       managed: a destroyed/unmapped window is already gone from the screen);
-   2. Place (+ Show, if newly visible) every visible window, current output
-      first;
-   3. Raise floating windows and the Monocle focus;
-   4. Focus the current output's focused window (or nothing). *)
-let render (t : t) =
-  let screens = Stack_set.screens t.ss in
+   2. Place (+ Show, if newly visible) every visible window;
+   3. Raise floating windows and the Monocle focus — only if the stacking we
+      want is not already in place (see below) or [force];
+   4. Focus the current output's focused window (or nothing) — only if that
+      differs from what we last focused, or [force].
+
+   Stacking is already in place when nothing new appeared and the wanted raise
+   sequence is the old one with some windows dropped: X keeps the relative
+   order of what we raised before. A newly shown window may come up on top
+   (new clients are created topmost), so any Show triggers the raises.
+
+   For focus, "differs from what we last sent" also covers the focused window
+   being hidden, unmapped or destroyed in this step: the current output's focus
+   is always visible and managed, so it cannot still be that window. *)
+let render ?(force = false) (t : t) =
+  let screens = Stack_set.sorted_screens t.ss in
   let placements = List.concat_map (screen_placements t) screens in
   let placed =
     List.fold_left (fun m p -> Wmap.add p.win p.rect m) Wmap.empty placements
@@ -139,14 +169,27 @@ let render (t : t) =
         | Some _ -> [ place p ])
       placements
   in
-  let raises = List.concat_map (screen_raises t) screens in
-  ( { t with placed },
-    hides @ moves @ raises @ [ Command.Focus_window (Stack_set.peek t.ss) ] )
+  let raised = List.concat_map (screen_raises t) screens in
+  let shown = List.exists (fun p -> not (Wmap.mem p.win t.placed)) placements in
+  let raises =
+    if force || shown || not (is_subsequence raised t.raised) then
+      List.map (fun w -> Command.Raise_window w) raised
+    else []
+  in
+  let want = Stack_set.peek t.ss in
+  let focus =
+    if force || not (Option.equal Window_id.equal want t.focused_sent) then
+      [ Command.Focus_window want ]
+    else []
+  in
+  ( { t with placed; raised; focused_sent = want },
+    hides @ moves @ raises @ focus )
 
 (* Commit a new model. Stack_set operations return their input physically
    unchanged when they are a no-op (e.g. viewing the workspace already shown),
    in which case we emit nothing at all. *)
-let update t ss = if ss == t.ss then (t, []) else render { t with ss }
+let update ?force t ss =
+  if ss == t.ss then (t, []) else render ?force { t with ss }
 
 (* ------------------------------------------------------------------------ *)
 (* Event handlers                                                            *)
@@ -204,8 +247,13 @@ let toggle_float t w =
 
 let delta = function Action.Next -> 1 | Action.Prev -> -1
 
+(* A WM key binding only fires when no other client holds a keyboard grab, so
+   the user is talking to mlwm itself: every action that changes the model
+   re-asserts focus and stacking ([~force:true]), which also recovers focus
+   lost to an unmanaged window. Actions that change nothing still emit []. *)
 let act t (action : Action.t) =
   let ss = t.ss in
+  let update = update ~force:true in
   (* Most actions are about the focused window; with none they do nothing. *)
   let with_focused f =
     match Stack_set.peek ss with Some w -> update t (f w) | None -> (t, [])
@@ -260,8 +308,7 @@ let lookup_key (cfg : Config.t) binding =
 
 let step t (event : Event.t) =
   match event with
-  | Output_changed outputs ->
-      render { t with ss = Stack_set.reconcile outputs t.ss }
+  | Output_changed outputs -> update t (Stack_set.reconcile outputs t.ss)
   | Window_requested info ->
       if Stack_set.mem info.id t.ss then (t, [])
       else render { t with ss = manage t info }
@@ -270,8 +317,10 @@ let step t (event : Event.t) =
         render { t with ss = Stack_set.unmanage w t.ss }
       else (t, [])
   | Window_focus_requested w ->
+      (* A click is explicit: focus [w] even if we believe it already has
+         focus, since an unmanaged client may have taken it meanwhile. *)
       if Stack_set.mem w t.ss then
-        render { t with ss = Stack_set.focus_window w t.ss }
+        render ~force:true { t with ss = Stack_set.focus_window w t.ss }
       else (t, [])
   | Key_pressed binding -> (
       match lookup_key t.config binding with
@@ -290,7 +339,9 @@ let init (config : Config.t) ~outputs ~windows =
     Stack_set.empty ~count:(max 1 config.workspaces) ~layout
     |> Stack_set.reconcile outputs
   in
-  let t = { config; ss; placed = Wmap.empty } in
+  let t =
+    { config; ss; placed = Wmap.empty; focused_sent = None; raised = [] }
+  in
   let t =
     List.fold_left
       (fun t (info : Window_info.t) ->
@@ -298,7 +349,7 @@ let init (config : Config.t) ~outputs ~windows =
         else { t with ss = manage ~ws:1 t info })
       t (List.rev windows)
   in
-  let t, cmds = render t in
+  let t, cmds = render ~force:true t in
   (* Adopted windows are already mapped. Any that we are not showing (only
      possible when there is no output yet) must be hidden explicitly. *)
   let hides =
