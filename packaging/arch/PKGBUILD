@@ -1,0 +1,23 @@
+pkgname=mlwm
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Minimal OCaml tiling window manager"
+arch=('x86_64')
+license=('MIT')
+depends=('libx11' 'libxrandr')
+makedepends=('ocaml' 'dune')
+optdepends=(
+  'xterm: default terminal'
+  'rofi: application launcher'
+  'dmenu: run prompt'
+)
+
+build() {
+  cd "$startdir/../.."
+  dune build --profile=release --build-dir="$srcdir/build"
+}
+
+package() {
+  install -Dm755 "$srcdir/build/default/bin/main.exe" "$pkgdir/usr/bin/mlwm"
+  install -Dm644 "$startdir/mlwm.desktop" "$pkgdir/usr/share/xsessions/mlwm.desktop"
+}
