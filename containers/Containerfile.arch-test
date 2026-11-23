@@ -1,0 +1,7 @@
+FROM mlwm-arch-build
+
+RUN pacman -Syu --noconfirm --needed \
+    xorg-server-xvfb xorg-xrandr xterm rofi dmenu xdotool xorg-xprop xorg-xwininfo \
+    && pacman -Scc --noconfirm
+
+WORKDIR /src
