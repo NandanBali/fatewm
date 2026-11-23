@@ -31,6 +31,15 @@ $SUDO pacman -Syu --needed --noconfirm \
     xorg-server xorg-xinit xorg-xrandr libx11 libxrandr \
     xterm rofi dmenu ttf-dejavu
 
+clone_fresh() {
+    rm -rf "$SRC_DIR"
+    echo "==> Cloning $REPO_URL ($BRANCH) into $SRC_DIR..."
+    git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$SRC_DIR"
+    if [ "$(id -u)" -eq 0 ] && [ "$CURRENT_USER" != "root" ]; then
+        chown -R "$CURRENT_USER:$CURRENT_USER" "$SRC_DIR"
+    fi
+}
+
 # Reuse the current checkout if run from inside it; otherwise clone/update REPO_URL.
 SCRIPT_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
@@ -42,14 +51,13 @@ if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/dune-project" ] && [ -f "$SCRIPT_DI
 else
     if [ -d "$SRC_DIR/.git" ]; then
         echo "==> Updating existing checkout in $SRC_DIR..."
-        git -C "$SRC_DIR" fetch --depth 1 origin "$BRANCH"
-        git -C "$SRC_DIR" checkout -q -B "$BRANCH" "origin/$BRANCH"
-    else
-        echo "==> Cloning $REPO_URL ($BRANCH) into $SRC_DIR..."
-        git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$SRC_DIR"
-        if [ "$(id -u)" -eq 0 ] && [ "$CURRENT_USER" != "root" ]; then
-            chown -R "$CURRENT_USER:$CURRENT_USER" "$SRC_DIR"
+        if ! (git -C "$SRC_DIR" fetch --depth 1 origin "$BRANCH" &&
+              git -C "$SRC_DIR" checkout -f -q -B "$BRANCH" "origin/$BRANCH"); then
+            echo "    Existing checkout in $SRC_DIR is corrupted; re-cloning cleanly..."
+            clone_fresh
         fi
+    else
+        clone_fresh
     fi
     WORK_DIR="$SRC_DIR"
 fi
