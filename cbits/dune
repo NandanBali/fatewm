@@ -1,6 +1,7 @@
 (library
  (name mlwm_x11_c)
  (public_name mlwm.x11_c)
+ (libraries mlwm_proto)
  (foreign_stubs
   (language c)
   (names x11_stubs)
