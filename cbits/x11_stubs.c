@@ -684,11 +684,21 @@ CAMLprim value mlwm_x11_manage(value handle, value id) {
   CAMLreturn(Val_unit);
 }
 
+static int cleanup_error(Display *dpy, XErrorEvent *error) {
+  /* A destroy queues UnmapNotify first, so withdrawal cleanup can race it. */
+  return error->error_code == BadWindow ? 0 : log_error(dpy, error);
+}
+
 CAMLprim value mlwm_x11_unmanage(value handle, value id) {
   CAMLparam2(handle, id);
   mlwm_x11_t *ctx = context(handle);
+  /* Drain unrelated errors before limiting the trap to these two requests. */
+  XSync(ctx->dpy, False);
+  XErrorHandler previous = XSetErrorHandler(cleanup_error);
   XRemoveFromSaveSet(ctx->dpy, Long_val(id));
   XUngrabButton(ctx->dpy, Button1, AnyModifier, Long_val(id));
+  XSync(ctx->dpy, False);
+  XSetErrorHandler(previous);
   CAMLreturn(Val_unit);
 }
 

@@ -33,8 +33,9 @@ let run (config : Backend.config) ~init ~on_event =
       Hashtbl.replace placed_geom id
         { geometry = window.geometry; border_width = config.border_width })
   in
-  let forget id =
-    X.unmanage display id;
+  let forget ~destroyed id =
+    (* The server already drops grabs/save-set membership for destroyed windows. *)
+    if not destroyed then X.unmanage display id;
     Hashtbl.remove managed id;
     Hashtbl.remove placed_geom id;
     Hashtbl.remove ignore_unmap id;
@@ -131,12 +132,12 @@ let run (config : Backend.config) ~init ~on_event =
           else Hashtbl.replace ignore_unmap id (count - 1);
           None)
         else if Hashtbl.mem managed id then (
-          forget id;
+          forget ~destroyed:false id;
           Some (Event.Window_unmapped (Window_id.of_int id)))
         else None
     | X.Destroy_notify id ->
         if Hashtbl.mem managed id then (
-          forget id;
+          forget ~destroyed:true id;
           Some (Event.Window_destroyed (Window_id.of_int id)))
         else None
     | X.Button_press id ->
