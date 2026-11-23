@@ -68,6 +68,11 @@ echo "==> Installing mlwm binary and X11 session files..."
 $SUDO install -Dm755 "$BUILD_DIR/mlwm" /usr/local/bin/mlwm
 $SUDO install -Dm644 "$WORK_DIR/packaging/arch/mlwm.desktop" /usr/share/xsessions/mlwm.desktop
 
+if [ ! -s /usr/local/bin/mlwm ]; then
+    echo "mlwm bootstrap: /usr/local/bin/mlwm is empty after install (check disk space with df -h)." >&2
+    exit 1
+fi
+
 if [ -f "$TARGET_HOME/.xinitrc" ] && ! grep -q "exec mlwm" "$TARGET_HOME/.xinitrc"; then
     cp "$TARGET_HOME/.xinitrc" "$TARGET_HOME/.xinitrc.bak"
     echo "    (backed up existing $TARGET_HOME/.xinitrc to $TARGET_HOME/.xinitrc.bak)"
@@ -77,9 +82,12 @@ if [ "$(id -u)" -eq 0 ] && [ "$CURRENT_USER" != "root" ]; then
     chown "$CURRENT_USER:$CURRENT_USER" "$TARGET_HOME/.xinitrc"
 fi
 
+# Flush Btrfs delayed-allocation extents so an immediate VM reboot/close never leaves 0-byte files.
+sync
+
 echo ""
 echo "==> mlwm installed successfully!"
-echo "    Binary:   /usr/local/bin/mlwm"
+echo "    Binary:   /usr/local/bin/mlwm ($(wc -c < /usr/local/bin/mlwm) bytes)"
 echo "    Xinitrc:  $TARGET_HOME/.xinitrc"
 echo "    Source:   $WORK_DIR (edit config/config.ml and re-run ./bootstrap.sh to rebuild)"
 echo ""
