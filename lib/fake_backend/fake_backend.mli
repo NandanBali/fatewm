@@ -26,14 +26,18 @@ type world
 val empty_world :
   outputs:Types.Output.t list -> windows:Types.Window_info.t list -> world
 
-(** Apply a single backend command to [world]. *)
+(** Apply a single backend command to [world]. Commands for unknown or destroyed
+    windows, and focus requests for invisible windows, are recorded in [errors]
+    without changing the display. *)
 val apply_command : world -> Command.t -> world
 
 (** Apply a list of commands in order, stopping immediately if [Quit] or
     [Restart] takes effect. *)
 val apply_commands : world -> Command.t list -> world
 
-(** Update [world] for an incoming display event before forwarding to core. *)
+(** Update [world] for an incoming display event before forwarding to core.
+    A request for a live window leaves it unchanged; a request after destruction
+    introduces a new window with that ID. *)
 val apply_event : world -> Event.t -> world
 
 (** {1 Query Helpers} *)
@@ -59,6 +63,10 @@ val closed_windows : world -> Types.Window_id.t list
 
 (** Chronological list of [Spawn] command argument lists. *)
 val spawned : world -> string list list
+
+(** Invalid window commands, in chronological order. A focus target must also
+    be visible. *)
+val errors : world -> Command.t list
 
 val restarted : world -> bool
 val quit : world -> bool
