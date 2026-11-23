@@ -245,6 +245,28 @@ let toggle_float t w =
     in
     Stack_set.set_float w rect t.ss
 
+(* A client asked to move/resize itself. Only floating windows may: a tiled
+   window's geometry belongs to the layout, and the backend's synthetic
+   ConfigureNotify tells the client "no". [g] is root-relative, so it is stored
+   relative to the output showing the window (render then clamps it with
+   {!Layout.fit}). On a hidden workspace we cannot tell which output the
+   client meant its x/y for, so only the size is taken. Returns [t.ss]
+   physically unchanged when nothing changes. *)
+let configure t w (g : Rect.t) =
+  let ss = t.ss in
+  match (Wmap.find_opt w ss.floating, Stack_set.find_workspace w ss) with
+  | Some old, Some ws ->
+      let w' = max 1 g.w and h' = max 1 g.h in
+      let rect =
+        match Stack_set.screen_of_workspace ws.id ss with
+        | Some s ->
+            let o = s.output.geometry in
+            { Rect.x = g.x - o.x; y = g.y - o.y; w = w'; h = h' }
+        | None -> { old with w = w'; h = h' }
+      in
+      if Rect.equal rect old then ss else Stack_set.set_float w rect ss
+  | _ -> ss
+
 let delta = function Action.Next -> 1 | Action.Prev -> -1
 
 (* A WM key binding only fires when no other client holds a keyboard grab, so
@@ -322,7 +344,10 @@ let step t (event : Event.t) =
       if Stack_set.mem w t.ss then
         render ~force:true { t with ss = Stack_set.focus_window w t.ss }
       else (t, [])
-  | Window_configure_requested _ -> (t, [])
+  | Window_configure_requested { id; geometry } ->
+      (* Background event: at most a Place for the window itself, never a
+         forced Focus or Raise. *)
+      update t (configure t id geometry)
   | Key_pressed binding -> (
       match lookup_key t.config binding with
       | Some a -> act t a

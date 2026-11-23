@@ -213,6 +213,102 @@ let test_float_shrink () =
   check "restore after growing output"
     (place_of f cmds = Some (rect 1518 778 800 600))
 
+(* --- ConfigureRequest --- *)
+module Fake = Mlwm_fake_backend.Fake_backend
+
+let t_id = wid 20
+let cf = wid 21
+let configure st id g =
+  Core.step st (Event.Window_configure_requested { id; geometry = g })
+
+let cfg_state ?(outputs = [ single ]) ?(transient = None) () =
+  let st, _ = Core.init cfg ~outputs ~windows:[ info 20 (rect 0 0 400 300) ] in
+  let fi =
+    { (info ~floating:true 21 (rect 0 0 400 300)) with
+      Types.Window_info.transient_for = transient }
+  in
+  Core.step st (Event.Window_requested fi)
+
+let quiet name cmds =
+  check (name ^ ": no Focus_window") (not (has_focus cmds));
+  check (name ^ ": no Raise_window") (not (has_raise cmds))
+
+let test_configure () =
+  let st, cmds = cfg_state () in
+  check "configure: F centered"
+    (place_of cf cmds = Some (rect 438 208 400 300));
+  let _, c = configure st (wid 99) (rect 1 1 10 10) in
+  check "configure: unknown id" (c = []);
+  let tg = Core.geometry st t_id in
+  let st', c = configure st t_id (rect 5 5 77 88) in
+  check "configure: tiled refused" (c = []);
+  check "configure: tiled geometry unchanged" (Core.geometry st' t_id = tg);
+  let want g =
+    [ Command.Place_window { id = cf; geometry = g; border_width = bw } ]
+  in
+  let st1, c = configure st cf (rect 100 50 500 400) in
+  check "configure: visible float move+resize" (c = want (rect 100 50 500 400));
+  check "configure: geometry matches"
+    (Core.geometry st1 cf = Some (rect 100 50 500 400));
+  quiet "configure visible" c;
+  let _, c = configure st1 cf (rect 100 50 500 400) in
+  check "configure: identical gives []" (c = []);
+  let _, c = configure st cf (rect 0 0 5000 5000) in
+  check "configure: oversized clamped" (c = want (rect 0 0 1276 716));
+  quiet "configure oversized" c;
+  let st2, c = configure st cf (rect 1200 700 500 400) in
+  check "configure: bottom-right inside output"
+    (match place_of cf c with
+     | Some r -> inside ~out:single.geometry r
+     | None -> false);
+  check "configure: bottom-right stored geometry inside"
+    (match Core.geometry st2 cf with
+     | Some r -> inside ~out:single.geometry r
+     | None -> false);
+  (* hidden workspace: only size changes *)
+  let sth, _ = press st '2' in
+  let sth, c = configure sth cf (rect 999 999 600 350) in
+  check "configure: hidden float gives []" (c = []);
+  let _, c = press sth '1' in
+  check "configure: hidden float shows new size at old position"
+    (place_of cf c = Some (rect 438 208 600 350));
+  (* two outputs: stored relative to the output *)
+  let st, _ = cfg_state ~outputs:[ left; right ] () in
+  let st, _ = press st 'f' in
+  let st, _ = press st '2' in
+  let st, c = Core.step st (Event.Window_requested
+      (info ~floating:true 22 (rect 0 0 400 300))) in
+  let f2 = wid 22 in
+  check "configure: second-output float placed on R"
+    (match place_of f2 c with
+     | Some r -> inside ~out:right.geometry r
+     | None -> false);
+  let st, c = configure st f2 (rect 1380 10 300 200) in
+  check "configure: second output relative"
+    (place_of f2 c = Some (rect 1380 10 300 200));
+  check "configure: second output geometry"
+    (Core.geometry st f2 = Some (rect 1380 10 300 200));
+  quiet "configure two outputs" c;
+  (* transient float *)
+  let st, _ = cfg_state ~transient:(Some t_id) () in
+  let st, c = configure st cf (rect 100 50 500 400) in
+  check "configure: transient float" (c = want (rect 100 50 500 400));
+  check "configure: transient geometry"
+    (Core.geometry st cf = Some (rect 100 50 500 400));
+  quiet "configure transient" c;
+  (* through the fake backend *)
+  let _, world, _ =
+    Fake.run_world ~outputs:[ single ]
+      ~windows:[ info 20 (rect 0 0 400 300);
+                 info ~floating:true 21 (rect 0 0 400 300) ]
+      ~events:[ Event.Window_configure_requested
+                  { id = cf; geometry = rect 100 50 500 400 } ]
+      ~init:(Core.init cfg) ~on_event:Core.step
+  in
+  check "configure: fake backend geometry"
+    (Fake.window_geometry world cf = Some (rect 100 50 500 400));
+  check "configure: fake backend no errors" (Fake.errors world = [])
+
 let () =
   test_smoke ();
   test_rofi ();
@@ -220,6 +316,7 @@ let () =
   test_keys ();
   test_float_move ();
   test_float_shrink ();
+  test_configure ();
   if !failures > 0 then begin
     Printf.eprintf "%d/%d checks failed\n" !failures !total;
     exit 1
