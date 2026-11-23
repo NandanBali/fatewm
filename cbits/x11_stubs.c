@@ -27,7 +27,7 @@
 
 enum {
   A_PROTOCOLS, A_DELETE, A_TYPE, A_DIALOG, A_UTILITY, A_SPLASH,
-  A_TOOLBAR, A_MENU, A_STATE, A_COUNT
+  A_TOOLBAR, A_MENU, A_STATE, A_TAKE_FOCUS, A_TIMESTAMP, A_COUNT
 };
 
 typedef struct {
@@ -36,6 +36,14 @@ typedef struct {
   unsigned int requested_mask;
   KeySym sym;
 } key_grab_t;
+
+typedef struct managed_window {
+  Window id;
+  int input;
+  int take_focus;
+  int delete_window;
+  struct managed_window *next;
+} managed_window_t;
 
 typedef struct {
   Display *dpy;
@@ -47,6 +55,8 @@ typedef struct {
   Atom atoms[A_COUNT];
   key_grab_t *grabs;
   size_t grab_count;
+  managed_window_t *windows;
+  Time last_time;
 } mlwm_x11_t;
 
 #define Context(v) (*(mlwm_x11_t **)Data_custom_val(v))
@@ -65,6 +75,11 @@ static void close_context(mlwm_x11_t *ctx) {
     free(ctx->grabs);
     ctx->grabs = NULL;
     ctx->grab_count = 0;
+    while (ctx->windows != NULL) {
+      managed_window_t *next = ctx->windows->next;
+      free(ctx->windows);
+      ctx->windows = next;
+    }
   }
 }
 
@@ -103,6 +118,8 @@ static int log_error(Display *dpy, XErrorEvent *error) {
   return 0;
 }
 
+/* This process-wide reaper replaces OCaml's SIGCHLD handling and consumes ALL
+ * children. Unix.system/open_process (or other waiters) must not be used here. */
 static void reap_children(int signal_number) {
   int saved_errno = errno;
   (void)signal_number;
@@ -117,7 +134,7 @@ CAMLprim value mlwm_x11_open(value unit) {
     "WM_PROTOCOLS", "WM_DELETE_WINDOW", "_NET_WM_WINDOW_TYPE",
     "_NET_WM_WINDOW_TYPE_DIALOG", "_NET_WM_WINDOW_TYPE_UTILITY",
     "_NET_WM_WINDOW_TYPE_SPLASH", "_NET_WM_WINDOW_TYPE_TOOLBAR",
-    "_NET_WM_WINDOW_TYPE_MENU", "WM_STATE"
+    "_NET_WM_WINDOW_TYPE_MENU", "WM_STATE", "WM_TAKE_FOCUS", "_MLWM_TIMESTAMP"
   };
   /* Allocate the finalizable owner before acquiring any external resources. */
   handle = caml_alloc_custom(&display_ops, sizeof(mlwm_x11_t *), 0, 1);
@@ -157,6 +174,17 @@ CAMLprim value mlwm_x11_open(value unit) {
   }
   XSetErrorHandler(log_error);
   XInternAtoms(ctx->dpy, atom_names, A_COUNT, False, ctx->atoms);
+  /* WM_TAKE_FOCUS forbids CurrentTime, including before the first input event.
+   * A property round trip obtains a real server timestamp without stealing focus. */
+  XChangeProperty(ctx->dpy, ctx->root, ctx->atoms[A_TIMESTAMP], XA_INTEGER,
+                    8, PropModeReplace, NULL, 0);
+  XEvent timestamp;
+  do {
+    XWindowEvent(ctx->dpy, ctx->root, PropertyChangeMask, &timestamp);
+  } while (timestamp.xproperty.atom != ctx->atoms[A_TIMESTAMP] ||
+           timestamp.xproperty.state != PropertyNewValue);
+  ctx->last_time = timestamp.xproperty.time;
+  XDeleteProperty(ctx->dpy, ctx->root, ctx->atoms[A_TIMESTAMP]);
   int rr_error_base;
   ctx->randr = XRRQueryExtension(ctx->dpy, &ctx->rr_event_base, &rr_error_base);
   if (ctx->randr)
@@ -247,6 +275,32 @@ CAMLprim value mlwm_x11_outputs(value handle) {
 static int normal_window(mlwm_x11_t *ctx, Window w, XWindowAttributes *attrs) {
   return w != ctx->root && XGetWindowAttributes(ctx->dpy, w, attrs) &&
     !attrs->override_redirect;
+}
+
+static managed_window_t *managed_window(mlwm_x11_t *ctx, Window w) {
+  for (managed_window_t *window = ctx->windows; window != NULL; window = window->next)
+    if (window->id == w) return window;
+  return NULL;
+}
+
+static value geometry_snapshot(XWindowAttributes *attrs) {
+  CAMLparam0();
+  CAMLlocal3(geometry, pair, some);
+  geometry = rectangle(attrs->x, attrs->y, attrs->width, attrs->height);
+  pair = caml_alloc(2, 0);
+  Store_field(pair, 0, geometry);
+  Store_field(pair, 1, Val_int(attrs->border_width));
+  some = caml_alloc(1, 0);
+  Store_field(some, 0, pair);
+  CAMLreturn(some);
+}
+
+CAMLprim value mlwm_x11_geometry(value handle, value id) {
+  CAMLparam2(handle, id);
+  mlwm_x11_t *ctx = context(handle);
+  XWindowAttributes attrs;
+  if (!normal_window(ctx, Long_val(id), &attrs)) CAMLreturn(Val_none);
+  CAMLreturn(geometry_snapshot(&attrs));
 }
 
 static value window_info(mlwm_x11_t *ctx, Window w, XWindowAttributes *attrs) {
@@ -346,6 +400,24 @@ static KeySym keysym(value sym) {
   return (c >= 0x20 && c <= 0x7e) || c >= 0xa0 ? (KeySym)c : NoSymbol;
 }
 
+static int grab_error_code;
+
+static int grab_error_handler(Display *dpy, XErrorEvent *error) {
+  (void)dpy;
+  grab_error_code = error->error_code;
+  return 0;
+}
+
+static void report_grab_error(mlwm_x11_t *ctx, KeySym sym, unsigned int mods,
+                              const char *reason) {
+  const char *name = XKeysymToString(sym);
+  (void)ctx;
+  fprintf(stderr, "mlwm: cannot grab %s%s%s%s%s: %s\n",
+          mods & Mod4Mask ? "Super+" : "", mods & Mod1Mask ? "Alt+" : "",
+          mods & ShiftMask ? "Shift+" : "", mods & ControlMask ? "Ctrl+" : "",
+          name != NULL ? name : "unknown key", reason);
+}
+
 CAMLprim value mlwm_x11_grab_keys(value handle, value bindings) {
   CAMLparam2(handle, bindings);
   mlwm_x11_t *ctx = context(handle);
@@ -360,12 +432,17 @@ CAMLprim value mlwm_x11_grab_keys(value handle, value bindings) {
   XUngrabKey(ctx->dpy, AnyKey, AnyModifier, ctx->root);
   unsigned int locks[] = { 0, LockMask, ctx->numlock_mask,
                            LockMask | ctx->numlock_mask };
+  XSync(ctx->dpy, False); /* Drain unrelated asynchronous errors first. */
+  XErrorHandler previous = XSetErrorHandler(grab_error_handler);
   for (value it = bindings; it != Val_emptylist; it = Field(it, 1)) {
     value binding = Field(it, 0);
     KeySym sym = keysym(Field(binding, 1));
     KeyCode code = XKeysymToKeycode(ctx->dpy, sym);
-    if (sym == NoSymbol || code == 0) continue;
     unsigned int requested_mask = modifier_mask(Field(binding, 0));
+    if (sym == NoSymbol || code == 0) {
+      report_grab_error(ctx, sym, requested_mask, "no keycode in current keymap");
+      continue;
+    }
     unsigned int mask = requested_mask;
     /* '?' and uppercase Char bindings need the shifted level of their key.
      * Keep the requested symbol separately so the core receives its own binding. */
@@ -373,10 +450,18 @@ CAMLprim value mlwm_x11_grab_keys(value handle, value bindings) {
     if (sym != base && sym == XkbKeycodeToKeysym(ctx->dpy, code, 0, 1))
       mask |= ShiftMask;
     ctx->grabs[ctx->grab_count++] = (key_grab_t){code, mask, requested_mask, sym};
+    grab_error_code = 0;
     for (int i = 0; i < 4; ++i)
       XGrabKey(ctx->dpy, code, mask | locks[i], ctx->root, True,
                 GrabModeAsync, GrabModeAsync);
+    XSync(ctx->dpy, False); /* Associate each failing permutation with its binding. */
+    if (grab_error_code != 0) {
+      char message[256];
+      XGetErrorText(ctx->dpy, grab_error_code, message, sizeof message);
+      report_grab_error(ctx, sym, requested_mask, message);
+    }
   }
+  XSetErrorHandler(previous);
   CAMLreturn(Val_unit);
 }
 
@@ -431,6 +516,8 @@ CAMLprim value mlwm_x11_next_event(value handle) {
   caml_enter_blocking_section();
   XNextEvent(ctx->dpy, &ev);
   caml_leave_blocking_section();
+  if (ev.type == KeyPress || ev.type == KeyRelease) ctx->last_time = ev.xkey.time;
+  if (ev.type == ButtonPress || ev.type == ButtonRelease) ctx->last_time = ev.xbutton.time;
   if (ctx->randr && (ev.type == ctx->rr_event_base + RRScreenChangeNotify ||
                      ev.type == ctx->rr_event_base + RRNotify)) {
     XRRUpdateConfiguration(&ev);
@@ -562,19 +649,42 @@ CAMLprim value mlwm_x11_place(value handle, value id, value geometry,
   CAMLreturn(Val_unit);
 }
 
+static void send_protocol(mlwm_x11_t *ctx, Window w, Atom protocol) {
+  XEvent event;
+  memset(&event, 0, sizeof event);
+  event.xclient.type = ClientMessage;
+  event.xclient.window = w;
+  event.xclient.message_type = ctx->atoms[A_PROTOCOLS];
+  event.xclient.format = 32;
+  event.xclient.data.l[0] = (long)protocol;
+  event.xclient.data.l[1] = (long)ctx->last_time;
+  XSendEvent(ctx->dpy, w, False, NoEventMask, &event);
+}
+
 CAMLprim value mlwm_x11_focus(value handle, value id) {
   CAMLparam2(handle, id);
   mlwm_x11_t *ctx = context(handle);
-  Window w = id == Val_none ? ctx->root : (Window)Long_val(Field(id, 0));
-  XWindowAttributes attrs;
-  if (w == ctx->root || normal_window(ctx, w, &attrs))
-    XSetInputFocus(ctx->dpy, w, RevertToPointerRoot, CurrentTime);
+  if (id == Val_none) {
+    XSetInputFocus(ctx->dpy, ctx->root, RevertToPointerRoot, ctx->last_time);
+  } else {
+    Window w = Long_val(Field(id, 0));
+    managed_window_t *window = managed_window(ctx, w);
+    XWindowAttributes attrs;
+    if (window != NULL && normal_window(ctx, w, &attrs)) {
+      /* ICCCM: passive/locally active clients accept direct focus; globally
+       * active clients take it themselves in response to WM_TAKE_FOCUS. */
+      if (window->input)
+        XSetInputFocus(ctx->dpy, w, RevertToPointerRoot, ctx->last_time);
+      if (window->take_focus) send_protocol(ctx, w, ctx->atoms[A_TAKE_FOCUS]);
+    }
+  }
   CAMLreturn(Val_unit);
 }
 
 CAMLprim value mlwm_x11_replay_pointer(value handle) {
   CAMLparam1(handle);
-  XAllowEvents(context(handle)->dpy, ReplayPointer, CurrentTime);
+  mlwm_x11_t *ctx = context(handle);
+  XAllowEvents(ctx->dpy, ReplayPointer, ctx->last_time);
   CAMLreturn(Val_unit);
 }
 
@@ -627,24 +737,10 @@ CAMLprim value mlwm_x11_close_window(value handle, value id) {
   Window w = Long_val(id);
   XWindowAttributes attrs;
   if (!normal_window(ctx, w, &attrs)) CAMLreturn(Val_unit);
-  Atom *protocols = NULL;
-  int count = 0, supports_delete = 0;
-  if (XGetWMProtocols(ctx->dpy, w, &protocols, &count)) {
-    for (int i = 0; i < count; ++i)
-      if (protocols[i] == ctx->atoms[A_DELETE]) supports_delete = 1;
-  }
-  if (protocols != NULL) XFree(protocols);
-  if (supports_delete) {
-    XEvent event;
-    memset(&event, 0, sizeof event);
-    event.xclient.type = ClientMessage;
-    event.xclient.window = w;
-    event.xclient.message_type = ctx->atoms[A_PROTOCOLS];
-    event.xclient.format = 32;
-    event.xclient.data.l[0] = (long)ctx->atoms[A_DELETE];
-    event.xclient.data.l[1] = CurrentTime;
-    XSendEvent(ctx->dpy, w, False, NoEventMask, &event);
-  } else XKillClient(ctx->dpy, w);
+  managed_window_t *window = managed_window(ctx, w);
+  if (window != NULL && window->delete_window)
+    send_protocol(ctx, w, ctx->atoms[A_DELETE]);
+  else XKillClient(ctx->dpy, w);
   CAMLreturn(Val_unit);
 }
 
@@ -678,10 +774,32 @@ CAMLprim value mlwm_x11_spawn(value arguments) {
 CAMLprim value mlwm_x11_manage(value handle, value id) {
   CAMLparam2(handle, id);
   mlwm_x11_t *ctx = context(handle);
+  Window w = Long_val(id);
   XWindowAttributes attrs;
-  if (normal_window(ctx, Long_val(id), &attrs))
-    XAddToSaveSet(ctx->dpy, Long_val(id));
-  CAMLreturn(Val_unit);
+  if (!normal_window(ctx, w, &attrs)) CAMLreturn(Val_none);
+  if (managed_window(ctx, w) == NULL) {
+    managed_window_t *window = calloc(1, sizeof *window);
+    if (window == NULL) caml_raise_out_of_memory();
+    window->id = w;
+    window->input = 1; /* Absent InputHint means input=True. */
+    XWMHints *hints = XGetWMHints(ctx->dpy, w);
+    if (hints != NULL) {
+      if (hints->flags & InputHint) window->input = hints->input;
+      XFree(hints);
+    }
+    Atom *protocols = NULL;
+    int count = 0;
+    if (XGetWMProtocols(ctx->dpy, w, &protocols, &count))
+      for (int i = 0; i < count; ++i) {
+        if (protocols[i] == ctx->atoms[A_TAKE_FOCUS]) window->take_focus = 1;
+        if (protocols[i] == ctx->atoms[A_DELETE]) window->delete_window = 1;
+      }
+    if (protocols != NULL) XFree(protocols);
+    window->next = ctx->windows;
+    ctx->windows = window;
+    XAddToSaveSet(ctx->dpy, w);
+  }
+  CAMLreturn(geometry_snapshot(&attrs));
 }
 
 static int cleanup_error(Display *dpy, XErrorEvent *error) {
@@ -689,12 +807,21 @@ static int cleanup_error(Display *dpy, XErrorEvent *error) {
   return error->error_code == BadWindow ? 0 : log_error(dpy, error);
 }
 
-CAMLprim value mlwm_x11_unmanage(value handle, value id) {
-  CAMLparam2(handle, id);
+CAMLprim value mlwm_x11_unmanage(value handle, value id, value destroyed) {
+  CAMLparam3(handle, id, destroyed);
   mlwm_x11_t *ctx = context(handle);
-  /* Drain unrelated errors before limiting the trap to these two requests. */
+  managed_window_t **link = &ctx->windows;
+  while (*link != NULL && (*link)->id != (Window)Long_val(id)) link = &(*link)->next;
+  if (*link != NULL) {
+    managed_window_t *old = *link;
+    *link = old->next;
+    free(old);
+  }
+  if (Bool_val(destroyed)) CAMLreturn(Val_unit);
+  /* Drain unrelated errors before limiting the trap to withdrawal cleanup. */
   XSync(ctx->dpy, False);
   XErrorHandler previous = XSetErrorHandler(cleanup_error);
+  XDeleteProperty(ctx->dpy, Long_val(id), ctx->atoms[A_STATE]);
   XRemoveFromSaveSet(ctx->dpy, Long_val(id));
   XUngrabButton(ctx->dpy, Button1, AnyModifier, Long_val(id));
   XSync(ctx->dpy, False);
