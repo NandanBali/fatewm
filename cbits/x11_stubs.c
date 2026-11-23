@@ -599,12 +599,17 @@ CAMLprim value mlwm_x11_hide(value handle, value id) {
   CAMLparam2(handle, id);
   mlwm_x11_t *ctx = context(handle);
   XWindowAttributes attrs;
+  /* Keep a client withdrawal from racing this query/unmap pair: otherwise the
+   * counter could swallow the client's event when our unmap became a no-op. */
+  XGrabServer(ctx->dpy);
   int mapped = normal_window(ctx, Long_val(id), &attrs) &&
     attrs.map_state != IsUnmapped;
   if (mapped) {
     set_wm_state(ctx, Long_val(id), IconicState);
     XUnmapWindow(ctx->dpy, Long_val(id));
   }
+  XUngrabServer(ctx->dpy);
+  XFlush(ctx->dpy);
   CAMLreturn(Val_bool(mapped));
 }
 
