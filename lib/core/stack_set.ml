@@ -285,7 +285,10 @@ let neighbour_screen delta st =
       at startup the primary output shows workspace 1. Outputs beyond the number
       of workspaces are left unused;
     - the current output stays current if it survives, otherwise the primary (or
-      leftmost) output becomes current. An empty snapshot hides everything. *)
+      leftmost) output becomes current. An empty snapshot hides everything.
+
+    Floating rects are left untouched even if an output shrinks: the renderer
+    clamps them onto whatever output shows them ({!Layout.fit}). *)
 let reconcile (outputs : Output.t list) st =
   let outputs =
     List.fold_left
@@ -349,9 +352,22 @@ let reconcile (outputs : Output.t list) st =
     | Some c ->
         List.filter (fun s -> not (Output_id.equal s.output.id c.output.id)) all
   in
-  {
-    st with
-    current_output = current;
-    visible_outputs = others;
-    hidden_workspaces = hidden;
-  }
+  (* A snapshot that changes nothing (backends may repeat one) returns [st]
+     itself, so the reducer can emit nothing at all. [visible_outputs] is
+     compared order-insensitively: its order carries no meaning. *)
+  let unchanged =
+    current = st.current_output
+    && hidden = st.hidden_workspaces
+    && others
+       = List.sort
+           (fun a b -> spatial_compare a.output b.output)
+           st.visible_outputs
+  in
+  if unchanged then st
+  else
+    {
+      st with
+      current_output = current;
+      visible_outputs = others;
+      hidden_workspaces = hidden;
+    }
