@@ -33,6 +33,9 @@ external close : t -> unit = "mlwm_x11_close"
 external flush : t -> unit = "mlwm_x11_flush"
 external query_outputs : t -> Output.t list = "mlwm_x11_outputs"
 external query_windows : t -> Window_info.t list = "mlwm_x11_windows"
+(* Geometry is root-relative for our non-reparenting top-level windows;
+   width/height exclude their border. *)
+external geometry : t -> int -> (Rect.t * int) option = "mlwm_x11_geometry"
 external grab_keys : t -> Key.binding list -> unit = "mlwm_x11_grab_keys"
 external next_event : t -> event = "mlwm_x11_next_event"
 external configure : t -> configure -> unit = "mlwm_x11_configure"
@@ -47,10 +50,13 @@ external show : t -> int -> unit = "mlwm_x11_show"
 external hide : t -> int -> bool = "mlwm_x11_hide"
 external raise_window : t -> int -> unit = "mlwm_x11_raise"
 external close_window : t -> int -> unit = "mlwm_x11_close_window"
+(* This backend owns SIGCHLD and reaps every child with waitpid(-1).
+    Do not mix Spawn with Unix.system/open_process or other OCaml child waiters:
+    the backend's reaper can consume their exit status first. *)
 external spawn : string array -> unit = "mlwm_x11_spawn"
 
 (** Save-set membership lets the server remap hidden clients after a crash. *)
-external manage : t -> int -> unit = "mlwm_x11_manage"
-external unmanage : t -> int -> unit = "mlwm_x11_unmanage"
+external manage : t -> int -> (Rect.t * int) option = "mlwm_x11_manage"
+external unmanage : t -> int -> bool -> unit = "mlwm_x11_unmanage"
 external release : t -> int -> unit = "mlwm_x11_release"
 external sync : t -> unit = "mlwm_x11_sync"
