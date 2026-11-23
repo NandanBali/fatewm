@@ -16,7 +16,7 @@ FROM docker.io/library/archlinux:latest
 
 RUN pacman -Syu --noconfirm \
         xorg-server-xvfb xorg-xinit xorg-xrandr libx11 libxrandr \
-        xterm rofi dmenu xdotool xorg-xprop xorg-xwininfo procps-ng \
+        xterm rofi dmenu ttf-dejavu xdotool xorg-xprop xorg-xwininfo procps-ng \
     && pacman -Scc --noconfirm
 
 COPY --from=build /tmp/mlwm /usr/local/bin/mlwm

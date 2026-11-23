@@ -1,7 +1,8 @@
 FROM mlwm-arch-build
 
 RUN pacman -Syu --noconfirm --needed \
-    xorg-server-xvfb xorg-xrandr xterm rofi dmenu xdotool xorg-xprop xorg-xwininfo \
+    xorg-server-xvfb xorg-xrandr xterm rofi dmenu ttf-dejavu \
+    xdotool xorg-xprop xorg-xwininfo \
     && pacman -Scc --noconfirm
 
 WORKDIR /src

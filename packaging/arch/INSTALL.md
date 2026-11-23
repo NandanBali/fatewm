@@ -2,10 +2,10 @@
 
 ## 1. Runtime packages
 
-Install Xorg and the runtime/launcher packages on a blank Arch Linux machine:
+Install Xorg, a font for Xft/Pango launchers, and the runtime/launcher packages on a blank Arch Linux machine:
 
 ```sh
-pacman -S --needed xorg-server xorg-xinit libx11 libxrandr xterm rofi dmenu
+pacman -S --needed xorg-server xorg-xinit libx11 libxrandr xterm rofi dmenu ttf-dejavu
 ```
 
 ## 2. Install prebuilt binary and session files
